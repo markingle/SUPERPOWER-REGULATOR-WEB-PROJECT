@@ -1,74 +1,236 @@
+/* For wifi connection please refer to this code:
+https://github.com/khoih-prog/ESP_WiFiManager/blob/master/examples/ConfigOnStartup/ConfigOnStartup.ino
+Barcode scanning function:
+Using barcode scanner to get the package barcode and send it to the REST API of our backend server(refer to https://github.com/Porchster/backend_web_version)
+Check passcode function:
+Check the passcode from the keypad input. Send it to the REST API for checking whether the passcode match in our database.*/
+
+#include <ETH.h>
 #include <WiFi.h>
+#include <WiFiAP.h>
 #include <WiFiClient.h>
-#include <WebServer.h>                                                                  
+#include <WiFiGeneric.h>
+#include <WiFiMulti.h>
+#include <WiFiScan.h>
+#include <WiFiServer.h>
+#include <WiFiSTA.h>
+#include <WiFiType.h>
+#include <WiFiUdp.h>
+#include <WebServer.h>           
+                                                                
 #include <ESPmDNS.h>
 #include <SPIFFS.h>
 #include <WebSocketsServer.h>
-#include <ArduinoJson.h>
+
+#include <stdio.h>
+#include <string.h>
 #include <EEPROM.h>
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
-//Create a web server
-WebServer server ( 80 );
 
-// Create a Websocket server....
+// wifi manager
+#define _WIFIMGR_LOGLEVEL_    3
+#include <esp_wifi.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+
+// From v1.1.0
+#include <WiFiMulti.h>
+WiFiMulti wifiMulti;
+
+// Create a Web server on port 80
+WebServer server (80);
+
+// Create a Websocket server on port 81
 WebSocketsServer webSocket(81);
 
 
-unsigned int state;
-  
+unsigned int state, clock_seconds;
+
+#define USE_SPIFFS      true
+
+
 #define SEQUENCE_IDLE 0x00
 #define GET_SAMPLE 0x10
 
-#define GET_SAMPLE__WAITING 0x12
-
-const char WiFiAPPSK[] = "Livewell";
-
-#define USE_SERIAL Serial
 #define DBG_OUTPUT_PORT Serial
 
-byte promValues[] = {0,0,0};
+#if USE_SPIFFS
+#include <SPIFFS.h>
+FS* filesystem =      &SPIFFS;
+#define FileFS        SPIFFS
+#define FS_Name       "SPIFFS"
+#else
+// Use FFat
+#include <FFat.h>
+FS* filesystem =      &FFat;
+#define FileFS        FFat
+#define FS_Name       "FFat"
+#endif
+//////
+
+#define ESP_getChipId()   ((uint32_t)ESP.getEfuseMac())
+
+#define LED_BUILTIN       2
+#define LED_ON            HIGH
+#define LED_OFF           LOW
+
+// SSID and PW for Config Portal
+String ssid = "ESP_CONFIG_PORTAL";
+const char* password = "123456";
+
+// SSID and PW for your Router
+String Router_SSID;
+String Router_Pass;
+
+// From v1.1.0
+// You only need to format the filesystem once
+//#define FORMAT_FILESYSTEM       true
+#define FORMAT_FILESYSTEM         false
+
+#define MIN_AP_PASSWORD_SIZE    8
+
+#define SSID_MAX_LEN            32
+//From v1.0.10, WPA2 passwords can be up to 63 characters long.
+#define PASS_MAX_LEN            64
+
+typedef struct
+{
+  char wifi_ssid[SSID_MAX_LEN];
+  char wifi_pw  [PASS_MAX_LEN];
+}  WiFi_Credentials;
+
+typedef struct
+{
+  String wifi_ssid;
+  String wifi_pw;
+}  WiFi_Credentials_String;
+
+#define NUM_WIFI_CREDENTIALS      2
+
+typedef struct
+{
+  WiFi_Credentials  WiFi_Creds [NUM_WIFI_CREDENTIALS];
+} WM_Config;
+
+WM_Config         WM_config;
+
+#define  CONFIG_FILENAME              F("/wifi_cred.dat")
+//////
+
+// Indicates whether ESP has WiFi credentials saved from previous session, or double reset detected
+bool initialConfig = false;
+
+// Use false if you don't like to display Available Pages in Information Page of Config Portal
+// Comment out or use true to display Available Pages in Information Page of Config Portal
+// Must be placed before #include <ESP_WiFiManager.h>
+#define USE_AVAILABLE_PAGES     false
+
+// From v1.0.10 to permit disable/enable StaticIP configuration in Config Portal from sketch. Valid only if DHCP is used.
+// You'll loose the feature of dynamically changing from DHCP to static IP, or vice versa
+// You have to explicitly specify false to disable the feature.
+//#define USE_STATIC_IP_CONFIG_IN_CP          false
+
+// Use false to disable NTP config. Advisable when using Cellphone, Tablet to access Config Portal.
+// See Issue 23: On Android phone ConfigPortal is unresponsive (https://github.com/khoih-prog/ESP_WiFiManager/issues/23)
+#define USE_ESP_WIFIMANAGER_NTP     false
+
+// Use true to enable CloudFlare NTP service. System can hang if you don't have Internet access while accessing CloudFlare
+// See Issue #21: CloudFlare link in the default portal (https://github.com/khoih-prog/ESP_WiFiManager/issues/21)
+#define USE_CLOUDFLARE_NTP          false
+
+// New in v1.0.11
+#define USING_CORS_FEATURE          true
+//////
+
+// Use USE_DHCP_IP == true for dynamic DHCP IP, false to use static IP which you have to change accordingly to your network
+#if (defined(USE_STATIC_IP_CONFIG_IN_CP) && !USE_STATIC_IP_CONFIG_IN_CP)
+// Force DHCP to be true
+#if defined(USE_DHCP_IP)
+#undef USE_DHCP_IP
+#endif
+#define USE_DHCP_IP     true
+#else
+// You can select DHCP or Static IP here
+//#define USE_DHCP_IP     true
+#define USE_DHCP_IP     true
+#endif
+
+// Use USE_DHCP_IP == true for dynamic DHCP IP, false to use static IP which you have to change accordingly to your network
+//#if (defined(USE_STATIC_IP_CONFIG_IN_CP) && !USE_STATIC_IP_CONFIG_IN_CP)
+// Force DHCP to be true
+//#if defined(USE_DHCP_IP)
+//#undef USE_DHCP_IP
+//#endif
+//#define USE_DHCP_IP     true
+//#else
+// You can select DHCP or Static IP here
+//#define USE_DHCP_IP     true
+//#define USE_DHCP_IP     false
+//#endif
+
+#if ( USE_DHCP_IP || ( defined(USE_STATIC_IP_CONFIG_IN_CP) && !USE_STATIC_IP_CONFIG_IN_CP ) )
+// Use DHCP
+#warning Using DHCP IP
+IPAddress stationIP   = IPAddress(0, 0, 0, 0);
+IPAddress gatewayIP   = IPAddress(192, 168, 2, 1);
+IPAddress netMask     = IPAddress(255, 255, 255, 0);
+#else
+// Use static IP
+#warning Using static IP
+#ifdef ESP32
+IPAddress stationIP   = IPAddress(192, 168, 2, 232);
+#else
+IPAddress stationIP   = IPAddress(192, 168, 2, 186);
+#endif
+
+IPAddress gatewayIP   = IPAddress(192, 168, 2, 1);
+IPAddress netMask     = IPAddress(255, 255, 255, 0);
+#endif
+
+#define USE_CONFIGURABLE_DNS      true
+
+IPAddress dns1IP      = gatewayIP;
+IPAddress dns2IP      = IPAddress(8, 8, 8, 8);
+
+#include <ESP_WiFiManager.h>  
+
+// Onboard LED I/O pin on NodeMCU board
+const int PIN_LED = 2; // D4 on NodeMCU and WeMos. GPIO2/ADC12 of ESP32. Controls the onboard LED.
+
+// wifi manager
+HardwareSerial MySerial(1);
+WiFiMulti WiFiMulti;
+HTTPClient http;
+DynamicJsonDocument doc(32);
+
+const byte numChars = 32;
+char receivedChars[numChars]; // an array to store the received data
+boolean newData = false;
+//uint32_t value = 0;
 
 uint8_t remote_ip;
 uint8_t socketNumber;
 uint8_t send_num;
 float value;
-int ontime;   //On time setting from mobile web app
-int offtime;  //Off time setting from mobile web app
 
 //These will need to be updated to the GPIO pins for each control circuit.
-int POWER = 13;
-int TIMER_SWITCH = 2; 
-int WIFI_CONNECTION = 15;
-int WIFI_CLIENT_CONNECTED = 16;
-int Timer_LED = 17;
-int SPEED = 14; 
-int LEFT = 12; 
-int RIGHT = 13;
-const int ANALOG_PIN = A0;
 
-int onoff = 1; 
+int RELAY_SWITCH = 14;
+int WIFI_CLIENT_CONNECTED = 2;
+int LOCK_SENSOR = 17;
+int locked_flag = 0;
 
-volatile byte switch_state = HIGH;
-boolean pumpOn = false;
-boolean timer_state = false;
-boolean timer_started = false;
-boolean wifi_state = false;
-boolean wifi_client_conn = false;
-int startup_state;
-int ontime_value;  //number of ON minutes store in EEPROM
-int offtime_value; //number of OFF minutes store in EEPROM
+WiFiClient wifiClient;
 
-int Clock_seconds;
 
- 
-//Keep this code for reference to determine how to get voltage for pump
-//extern "C" {
-//uint16 readvdd33(void);
-//}
-
-hw_timer_t * timer = NULL;
-
+//\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\This section of code sets up the exchange of data between the broswer and the firmware //////////////////////////////
 void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght) {
+  
+    //Will probably use these variables with Superpower Super work
     String text = String((char *) &payload[0]);
     char * textC = (char *) &payload[0];
     String voltage;
@@ -79,29 +241,36 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght
     //int onof;
     uint32_t rmask;
     int i;
-    
-    switch(type) {
+
+switch(type) {
         case WStype_DISCONNECTED:
             //Reset the control for sending samples of ADC to idle to allow for web server to respond.
-            USE_SERIAL.printf("[%u] Disconnected!\n", num);
+            Serial.printf("[%u] Disconnected!\n", num);
             state = SEQUENCE_IDLE;
-            digitalWrite(WIFI_CLIENT_CONNECTED, LOW);
+            //digitalWrite(WIFI_CLIENT_CONNECTED, LOW);
             break;
+            
         case WStype_CONNECTED:
           {
             //Display client IP info that is connected in Serial monitor and set control to enable samples to be sent every two seconds (see analogsample() function)
             IPAddress ip = webSocket.remoteIP(num);
-            USE_SERIAL.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
-            digitalWrite(WIFI_CLIENT_CONNECTED, HIGH);
+            Serial.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
+            //digitalWrite(WIFI_CLIENT_CONNECTED, HIGH);
             socketNumber = num;
             state = GET_SAMPLE;
 
-            StaticJsonDocument<200> doc;
+            /* Save for later
+            //Updating webpage with stored setting from EEPROM
+            
+            //StaticJsonDocument<200> doc;
          
             doc["message_type"] = "startup";
-            doc["startup_state"] = String(startup_state);
-            doc["ontime"] = String(ontime);
-            doc["offtime"] = String(offtime);
+            doc["FS_On"] = String(FS_on_setting);
+            doc["FS_Off"] = String(FS_off_setting);
+            doc["PS_On"] = String(PS_on_setting);
+            doc["PS_Off"] = String(PS_off_setting);
+            doc["NS_On"] = String(NS_on_setting);
+            doc["NS_Off"] = String(NS_off_setting);
             
             String databuf;
             serializeJson(doc, databuf);
@@ -111,145 +280,34 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght
             //webSocket.sendTXT(num, temp4);
             wifi_client_conn = true;
           }
-            break;
+            break;*/
+          }
  
         case WStype_TEXT:
+          {
 
-            if (payload[0] == 'I') 
-            {
-              Serial.println("Communicating to device...");
-            }
-            if (payload[0] == '+')
-                {
-                Serial.printf("[%u] On Time Setting Control Msg: %s\n", num, payload);
-                Serial.println((char *)payload);
-                ontime = abs(atoi((char *)payload));
-                //uint32_t ontime = (uint32_t) strtol((const char *) &payload[1], NULL, 2);
-                Serial.print("On Time = ");
-                Serial.println(ontime);
-                EEPROM.write(1,ontime);
-                EEPROM.commit();
-                delay(500);
-                byte value = EEPROM.read(1);
-                Serial.println("On Time Stored in EEPROM " + String(value));
-                }
-            if (payload[0] == '-')
-                {
-                Serial.printf("[%u] Off Time Setting Control Msg: %s\n", num, payload);
-                Serial.println((char *)&payload[1]);
-                offtime = abs(atoi((char *)payload));
-                //uint32_t offtime = (uint32_t) strtol((const char *) &payload[1], NULL, 2);
-                Serial.printf("Off Time = ");
-                Serial.println(offtime);
-                EEPROM.write(2,offtime);
-                EEPROM.commit();
-                delay(500);
-                byte value = EEPROM.read(2);
-                Serial.println("Off Time stored in EEPROM " + String(value));
-                }
-            if (payload[0] == 'O')
-                {
-                Serial.printf("[%u] Timer state event %s\n", num, payload);
-                //Serial.println((char *)&payload);
-                if (payload[1] == 'N')
-                  {
-                    startup_state = 1;
-                    EEPROM.write(0,startup_state);
-                    EEPROM.commit();
-                    byte value = EEPROM.read(0);
-                    Serial.println("Timer turned ON " + String(value));
-                    timer_state = true;
-                    pumpOn = true;
-                  }
-                if (payload[2] == 'F')
-                  {
-                    startup_state = 0;
-                    EEPROM.write(0,startup_state);
-                    EEPROM.commit();
-                    byte value = EEPROM.read(0);
-                    Serial.println("Timer turned OFF " + String(value));
-                    timer_state = false;
-                    pumpOn = false;
-                  }
-                }
+          //Updating settings from webpage and storing into EEPROM....all variables are updated when this runs
+          
+          StaticJsonDocument<200> doc;
+          
+          // Deserialize the JSON document
+          DeserializationError error = deserializeJson(doc, (const char *) payload, lenght);
+        
+          // Test if parsing succeeds.
+          if (error) {
+            Serial.print(F("deserializeJson() failed: "));
+            Serial.println(error.c_str());
+            return;
+          }
 
-            //Hang on to this code until you are done!!!!
-            /*if (payload[0] == '#')  
-                Serial.printf("[%u] Digital GPIO Control Msg: %s\n", num, payload);
-                if (payload[1] == 'I')
-                {
-                  if (payload[2] == 'D')
-                    {
-                    Serial.printf("Direction Down");
-                    //value=readvdd33();
-                    Serial.print("Vcc:");
-                    Serial.println(value/1000);
-                    percentage = (value/1000)/3.0;
-                    Serial.print("percentage:");
-                    Serial.println(percentage);
-                    actual_voltage = 11.8*percentage; //Using 11.8 to conservative
-                    Serial.print("act_volt:");
-                    Serial.println(percentage);
-                    voltage = String(actual_voltage);
-                    webSocket.sendTXT(num, voltage);
-                    //digitalWrite(POWER, HIGH);
-                    }
-                  if (payload[2] == 'U')
-                    {
-                    Serial.printf("Direction Up");
-                    //digitalWrite(POWER, LOW);
-                    }
-                  break;
-                }
-                if (payload[1] == 'M')
-                {
-                  if (payload[2] == 'D')
-                    {
-                    Serial.printf("Direction Down");
-                    //digitalWrite(MOMENTARY, HIGH);
-                    }
-                  if (payload[2] == 'U')
-                    {
-                    Serial.printf("Direction Up");
-                    //digitalWrite(MOMENTARY, LOW);
-                    }
-                  break;
-                }
-                if (payload[1] == 'L')
-                {
-                  if (payload[2] == 'D')
-                    {
-                    Serial.printf("Direction Down");
-                    digitalWrite(LEFT, HIGH);
-                    }
-                  if (payload[2] == 'U')
-                    {
-                    Serial.printf("Direction Up");
-                    digitalWrite(LEFT, LOW);
-                    }
-                  break;
-                 }
-                 if (payload[1] == 'R')
-                 {
-                  if (payload[2] == 'D')
-                    {
-                    Serial.printf("Direction Down");
-                    digitalWrite(RIGHT, HIGH);
-                    }
-                  if (payload[2] == 'U')
-                    {
-                    Serial.printf("Direction Up");
-                    digitalWrite(RIGHT, LOW);
-                    }
-                  break;
-                 }
-            if (payload[0] == 'S')
-              {
-                Serial.printf("[%u] Analog GPIO Control Msg: %s\n", num, payload);
-              }*/
-              
+          //EEPROM work done here
+          }
+                
          case WStype_BIN:
          {
+
+          //Keeping this incase I need it later....
+          
             /*USE_SERIAL.printf("[%u] get binary lenght: %u\n", num, lenght);
             //hexdump(payload, lenght);
             //analogWrite(13,atoi((const char *)payload));
@@ -264,9 +322,50 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght
          break;
          
          case WStype_ERROR:
-            USE_SERIAL.printf(WStype_ERROR + " Error [%u] , %s\n",num, payload); 
-    }
+         {
+            Serial.printf(WStype_ERROR + " Error [%u] , %s\n",num, payload);
+         } 
+     }
+ }
+
+
+/////////////////////////This section of code sets up the exchange of data between the broswer and the firmware \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+// wifi manager
+uint8_t connectMultiWiFi(void);
+
+//prints to Serial show status while testing
+void heartBeatPrint(void)
+{
+  static int num = 1;
+
+  if (WiFi.status() == WL_CONNECTED)
+    Serial.print("H");        // H means connected to WiFi
+  else
+    Serial.print("F");        // F means not connected to WiFi
+
+  if (num == 80)
+  {
+    Serial.println();
+    num = 1;
+  }
+  else if (num++ % 10 == 0)
+  {
+    Serial.print(" ");
+  }
 }
+
+//show wifi status
+void check_WiFi(void)
+{
+  if ( (WiFi.status() != WL_CONNECTED) )
+  {
+    Serial.println("\nWiFi lost. Call connectMultiWiFi in loop");
+    connectMultiWiFi();
+  }
+}
+
+
 
 void handleRoot() {
   server.send(200, "text/html", "<h1>You are connected</h1>");
@@ -318,155 +417,395 @@ bool handleFileRead(String path){
   return false;
 }
 
-void setupWiFi()
+
+//call check functions
+void check_status(void)
 {
-  WiFi.mode(WIFI_AP);
-  
-  String AP_NameString = "SS Regulator";
+  static ulong checkstatus_timeout  = 0;
+  static ulong checkwifi_timeout    = 0;
+  static ulong current_millis;
 
-  char AP_NameChar[AP_NameString.length() + 1];
-  memset(AP_NameChar, 0, AP_NameString.length() + 1);
+#define WIFICHECK_INTERVAL    1000L
+#define HEARTBEAT_INTERVAL    10000L
 
-  for (int i=0; i<AP_NameString.length(); i++)
-    AP_NameChar[i] = AP_NameString.charAt(i);
+  current_millis = millis();
 
-  WiFi.softAP(AP_NameChar);
-  wifi_state = true;
-  digitalWrite(WIFI_CONNECTION, HIGH);
+  // Check WiFi every WIFICHECK_INTERVAL (1) seconds.
+  if ((current_millis > checkwifi_timeout) || (checkwifi_timeout == 0))
+  {
+    check_WiFi();
+    checkwifi_timeout = current_millis + WIFICHECK_INTERVAL;
+  }
+
+  // Print hearbeat every HEARTBEAT_INTERVAL (10) seconds.
+  if ((current_millis > checkstatus_timeout) || (checkstatus_timeout == 0))
+  {
+    heartBeatPrint();
+    checkstatus_timeout = current_millis + HEARTBEAT_INTERVAL;
+  }
 }
 
-void IRAM_ATTR onoffTimer(){
+void loadConfigData(void)
+{
+  File file = FileFS.open(CONFIG_FILENAME, "r");
+  LOGERROR(F("LoadWiFiCfgFile "));
 
-  switch (onoff) {
+  if (file)
+  {
+    file.readBytes((char *) &WM_config, sizeof(WM_config));
+    file.close();
+    LOGERROR(F("OK"));
+  }
+  else
+  {
+    LOGERROR(F("failed"));
+  }
+}
 
-    case 0:
-      if (pumpOn == false) 
-      {
-        digitalWrite(TIMER_SWITCH,LOW);  //We only need to set TIMER_SWITCH once....set pumpOn to TRUE in prep for end of OFFTIME.
-        pumpOn = true;
-        Serial.println("Turning OFF pump");
-        digitalWrite(Timer_LED, LOW);
-      }
-      Serial.println("Pump has been OFF for " + String(Clock_seconds) + " seconds");
-      Clock_seconds++;
-      if (Clock_seconds > (offtime*60)){
-        onoff = 1;
-        Clock_seconds = 1;
-      }
-      break;
-    
-    case 1:
-      if (pumpOn == true)
-      {
-        digitalWrite(TIMER_SWITCH,HIGH);  //We only need to set TIMER_SWITCH once....set pumpOn to FALSE in prep for end of OFFTIME.
-        pumpOn = false;
-        Serial.println("Turning ON pump");
-        digitalWrite(Timer_LED, HIGH);
-      }
-      Serial.println("Pump is running for " + String(Clock_seconds) + " seconds");
-      Clock_seconds++;
-      if (Clock_seconds > (ontime*60)) {
-        onoff = 0;
-        Clock_seconds = 1;
-      }
-      break;
+void saveConfigData(void)
+{
+  File file = FileFS.open(CONFIG_FILENAME, "w");
+  LOGERROR(F("SaveWiFiCfgFile "));
+
+  if (file)
+  {
+    file.write((uint8_t*) &WM_config, sizeof(WM_config));
+    file.close();
+    LOGERROR(F("OK"));
+  }
+  else
+  {
+    LOGERROR(F("failed"));
+  }
+}
+
+uint8_t connectMultiWiFi(void)
+{
+#if ESP32
+  // For ESP32, this better be 0 to shorten the connect time
+#define WIFI_MULTI_1ST_CONNECT_WAITING_MS       0
+#else
+  // For ESP8266, this better be 2200 to enable connect the 1st time
+#define WIFI_MULTI_1ST_CONNECT_WAITING_MS       2200L
+#endif
+
+#define WIFI_MULTI_CONNECT_WAITING_MS           100L
+
+  uint8_t status;
+  LOGERROR(F("ConnectMultiWiFi with :"));
+
+  if ( (Router_SSID != "") && (Router_Pass != "") )
+  {
+    LOGERROR3(F("* Flash-stored Router_SSID = "), Router_SSID, F(", Router_Pass = "), Router_Pass );
+  }
+
+  for (uint8_t i = 0; i < NUM_WIFI_CREDENTIALS; i++)
+  {
+    // Don't permit NULL SSID and password len < MIN_AP_PASSWORD_SIZE (8)
+    if ( (String(WM_config.WiFi_Creds[i].wifi_ssid) != "") && (strlen(WM_config.WiFi_Creds[i].wifi_pw) >= MIN_AP_PASSWORD_SIZE) )
+    {
+      LOGERROR3(F("* Additional SSID = "), WM_config.WiFi_Creds[i].wifi_ssid, F(", PW = "), WM_config.WiFi_Creds[i].wifi_pw );
     }
-}
-
-void startTimer(){
-  timer = timerBegin(0, 80, true);
-  timerAttachInterrupt(timer, &onoffTimer, true);
-  timerAlarmWrite(timer, 1000000, true);
-  yield();
-  timerAlarmEnable(timer);
-  timer_started = true;
-  Serial.println("Timer Started");
-}
-
-void stopTimer(){
-  if (timer != NULL) {
-    timerAlarmDisable(timer);
-    timerDetachInterrupt(timer);
-    timerEnd(timer);
-    timer = NULL;
-    timer_started = false;
-    Serial.println("Timer Stopped");
-    digitalWrite(TIMER_SWITCH,LOW);
-    digitalWrite(Timer_LED,LOW);
   }
+
+  LOGERROR(F("Connecting MultiWifi..."));
+  WiFi.mode(WIFI_STA);
+
+#if !USE_DHCP_IP
+#if USE_CONFIGURABLE_DNS
+  // Set static IP, Gateway, Subnetmask, DNS1 and DNS2. New in v1.0.5
+  WiFi.config(stationIP, gatewayIP, netMask, dns1IP, dns2IP);
+#else
+  // Set static IP, Gateway, Subnetmask, Use auto DNS1 and DNS2.
+  WiFi.config(stationIP, gatewayIP, netMask);
+#endif
+#endif
+
+  int i = 0;
+  status = wifiMulti.run();
+  delay(WIFI_MULTI_1ST_CONNECT_WAITING_MS);
+
+  while ( ( i++ < 10 ) && ( status != WL_CONNECTED ) )
+  {
+    status = wifiMulti.run();
+    if ( status == WL_CONNECTED )
+      break;
+    else
+      delay(WIFI_MULTI_CONNECT_WAITING_MS);
+  }
+
+  if ( status == WL_CONNECTED )
+  {
+    LOGERROR1(F("WiFi connected after time: "), i);
+    LOGERROR3(F("SSID:"), WiFi.SSID(), F(",RSSI="), WiFi.RSSI());
+    LOGERROR3(F("Channel:"), WiFi.channel(), F(",IP address:"), WiFi.localIP() );
+  }
+  else
+    LOGERROR(F("WiFi not connected"));
+
+  return status;
 }
 
+// wifi manager
+void setup_wifi() {
+
+  randomSeed(micros());
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("MAC: ");
+  Serial.println(WiFi.macAddress());
+  digitalWrite(WIFI_CLIENT_CONNECTED, HIGH);
+
+  // setup mac based channel for MQTT
+  int first_char, second_char, quotient;
+  byte MAC[6];
+  WiFi.macAddress(MAC);
+  char macAdd[13] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  for (int i = 0; i < 6; i++) {
+    quotient = MAC[i];
+    second_char = quotient % 16;
+    first_char = quotient / 16;
+
+    //convert to readable value
+    if (first_char < 10)
+      macAdd[2 * i] = 48 + first_char;
+    else
+      macAdd[2 * i] = 55 + first_char;
+
+    if (second_char < 10)
+      macAdd[2 * i + 1] = 48 + second_char;
+    else
+      macAdd[2 * i + 1] = 55 + second_char;
+  }
+  macAdd[12] = 0;
+}
+
+//unlock porchster
+void Unlock()
+{
+  digitalWrite(RELAY_SWITCH, HIGH); //We only need to set TIMER_SWITCH once....set pumpOn to FALSE in prep for end of OFFTIME.
+  Serial.println("Unlock triggered");
+  delay(2000);
+  digitalWrite(RELAY_SWITCH, LOW);
+}
+
+//create http GET easily
+String httpGETRequest(const String serverName) {
+  HTTPClient http;
+
+  // Your IP address with path or Domain name with URL path
+  http.begin(serverName);
+
+  // Send HTTP POST request
+  int httpResponseCode = http.GET();
+  String payload = "{}";
+
+  if (httpResponseCode > 0) {
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+    payload = http.getString();
+  }
+  else {
+    Serial.print("Error code: ");
+    Serial.println(httpResponseCode);
+  }
+  // Free resources
+  http.end();
+  return payload;
+}
+
+// this function first to run
 void setup() {
-  pinMode(POWER, OUTPUT);
-  //pinMode(TIMER_SWITCH, OUTPUT);
-  pinMode(WIFI_CONNECTION, OUTPUT);
+  WiFi.mode(WIFI_STA);
+  Serial.setDebugOutput(false);
+
   pinMode(WIFI_CLIENT_CONNECTED, OUTPUT);
-  pinMode(Timer_LED, OUTPUT);
-  pinMode(SPEED, OUTPUT);
-  
-  digitalWrite(POWER, LOW);
-  //digitalWrite(TIMER_SWITCH, LOW);
-  digitalWrite(WIFI_CONNECTION, LOW);
+  pinMode(RELAY_SWITCH, OUTPUT);
+  pinMode(LOCK_SENSOR, INPUT_PULLUP);
+
   digitalWrite(WIFI_CLIENT_CONNECTED, LOW);
-  digitalWrite(Timer_LED, LOW);
-  digitalWrite(SPEED, HIGH);
-  
-  
+  digitalWrite(RELAY_SWITCH, LOW);
+  digitalWrite(LOCK_SENSOR, HIGH);
+
   Serial.begin(115200);
-  SPIFFS.begin();
-  Serial.println();
-  Serial.print("Configuring access point...");
-  /* You can remove the password parameter if you want the AP to be open. */
-  setupWiFi();
-  IPAddress myIP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(myIP);
 
-  EEPROM.begin(3); //Index of three for - On/Off state 1 or 0, OnTime value, OffTime value
+  digitalWrite(RELAY_SWITCH, LOW);
 
+  // wifi manager
+  // initialize the LED digital pin as an output.
+  pinMode(PIN_LED, OUTPUT);
 
-  //Determine state of timer before it was powered off
-  //startup_state = EEPROM.read(0);
-  //if (startup_state == 0) 
- 
-    Serial.println("Start up state of pump is OFF");
-    timer_state = false;
-    pumpOn = false;
-    pinMode(TIMER_SWITCH, OUTPUT);
-    digitalWrite(TIMER_SWITCH, LOW);
-    digitalWrite(Timer_LED, LOW);
-  //}
-  //else
-  //{
-  //  Serial.println("State of pump is ON...turning it off");
-  //  timer_state = true;
-  //  pumpOn = true;
-  //  pinMode(TIMER_SWITCH, OUTPUT);
-  //  digitalWrite(TIMER_SWITCH, LOW);
-  //}
+  while (!Serial);
+  Serial.print("\nStarting ConfigOnStartup with DoubleResetDetect using " + String(FS_Name));
+  Serial.println(" on " + String(ARDUINO_BOARD));
+  Serial.setDebugOutput(false);
 
-  //Determine the value set for ON Time in EEPROM
-  ontime_value = EEPROM.read(1);
-  if (ontime_value > 0) 
+  if (FORMAT_FILESYSTEM)
+    FileFS.format();
+
+  // Format FileFS if not yet
+#ifdef ESP32
+  if (!FileFS.begin(true))
+#else
+  if (!FileFS.begin())
+#endif
   {
-    ontime = ontime_value;
-    Serial.println("On Time setting is " + String(ontime));
+    Serial.print(FS_Name);
+    Serial.println(F(" failed! AutoFormatting."));
+
+#ifdef ESP8266
+    FileFS.format();
+#endif
   }
-    
-  //Determine the value set for OFF Time inEEPROM
-  offtime_value = EEPROM.read(2);
-  if (offtime_value > 0) 
+  digitalWrite(PIN_LED, LED_ON); // turn the LED on by making the voltage LOW to tell us we are in configuration mode.
+  unsigned long startedAt = millis();
+
+  //Local intialization. Once its business is done, there is no need to keep it around
+  // Use this to default DHCP hostname to ESP8266-XXXXXX o  r ESP32-XXXXXX
+  ESP_WiFiManager ESP_wifiManager;
+  // Use this to personalize DHCP hostname (RFC952 conformed)
+  //ESP_WiFiManager ESP_wifiManager("ConfigOnStartup");
+
+  //set custom ip for portal
+  //ESP_wifiManager.setAPStaticIPConfig(IPAddress(192, 168, 100, 1), IPAddress(192, 168, 100, 1), IPAddress(255, 255, 255, 0));
+
+  ESP_wifiManager.setMinimumSignalQuality(-1);
+
+  // From v1.0.10 only
+  // Set config portal channel, default = 1. Use 0 => random channel from 1-13
+  ESP_wifiManager.setConfigPortalChannel(0);
+  //////
+
+#if !USE_DHCP_IP
+#if USE_CONFIGURABLE_DNS
+  // Set static IP, Gateway, Subnetmask, DNS1 and DNS2. New in v1.0.5
+  ESP_wifiManager.setSTAStaticIPConfig(stationIP, gatewayIP, netMask, dns1IP, dns2IP);
+#else
+  // Set static IP, Gateway, Subnetmask, Use auto DNS1 and DNS2.
+  ESP_wifiManager.setSTAStaticIPConfig(stationIP, gatewayIP, netMask);
+#endif
+#endif
+
+  // New from v1.1.1
+#if USING_CORS_FEATURE
+  ESP_wifiManager.setCORSHeader("Your Access-Control-Allow-Origin");
+#endif
+
+  // We can't use WiFi.SSID() in ESP32 as it's only valid after connected.
+  // SSID and Password stored in ESP32 wifi_ap_record_t and wifi_config_t are also cleared in reboot
+  // Have to create a new function to store in EEPROM/SPIFFS for this purpose
+  Router_SSID = ESP_wifiManager.WiFi_SSID();
+  Router_Pass = ESP_wifiManager.WiFi_Pass();
+
+  //Remove this line if you do not want to see WiFi password printed
+  Serial.println("Stored: SSID = " + Router_SSID + ", Pass = " + Router_Pass);
+
+  //Check if there is stored WiFi router/password credentials.
+  //If not found, device will remain in configuration mode until switched off via webserver.
+  Serial.println("Opening configuration portal.");
+
+  // From v1.1.0, Don't permit NULL password
+  if ( (Router_SSID != "") && (Router_Pass != "") )
   {
-    offtime = offtime_value;
-    Serial.println("OFF Time setting is " + String(offtime));
+    LOGERROR3(F("* Add SSID = "), Router_SSID, F(", PW = "), Router_Pass);
+    wifiMulti.addAP(Router_SSID.c_str(), Router_Pass.c_str());
+
+    ESP_wifiManager.setConfigPortalTimeout(10); //If no access point name has been previously entered disable timeout.
+    Serial.println("Got stored Credentials. Timeout 10s for Config Portal");
+  }
+  else
+  {
+    Serial.println("Open Config Portal without Timeout: No stored Credentials.");
+    initialConfig = true;
   }
 
-  server.on("/", HTTP_GET, [](){
+  // SSID to uppercase
+  ssid.toUpperCase();
+  Serial.println("Starting configuration portal.");
+  digitalWrite(PIN_LED, LED_ON); // turn the LED on by making the voltage LOW to tell us we are in configuration mode.
+
+  // Starts an access point
+  if (!ESP_wifiManager.startConfigPortal((const char *) ssid.c_str(), password))
+    Serial.println("Not connected to WiFi but continuing anyway.");
+  else
+  {
+    Serial.println("WiFi connected...yeey :)");
+  }
+
+  // Only clear then save data if CP entered and with new valid Credentials
+  // No CP => stored getSSID() = ""
+  if ( String(ESP_wifiManager.getSSID(0)) != "" && String(ESP_wifiManager.getSSID(1)) != "" )
+  {
+    // Stored  for later usage, from v1.1.0, but clear first
+    memset(&WM_config, 0, sizeof(WM_config));
+    for (uint8_t i = 0; i < NUM_WIFI_CREDENTIALS; i++)
+    {
+      String tempSSID = ESP_wifiManager.getSSID(i);
+      String tempPW   = ESP_wifiManager.getPW(i);
+
+      if (strlen(tempSSID.c_str()) < sizeof(WM_config.WiFi_Creds[i].wifi_ssid) - 1)
+        strcpy(WM_config.WiFi_Creds[i].wifi_ssid, tempSSID.c_str());
+      else
+        strncpy(WM_config.WiFi_Creds[i].wifi_ssid, tempSSID.c_str(), sizeof(WM_config.WiFi_Creds[i].wifi_ssid) - 1);
+
+      if (strlen(tempPW.c_str()) < sizeof(WM_config.WiFi_Creds[i].wifi_pw) - 1)
+        strcpy(WM_config.WiFi_Creds[i].wifi_pw, tempPW.c_str());
+      else
+        strncpy(WM_config.WiFi_Creds[i].wifi_pw, tempPW.c_str(), sizeof(WM_config.WiFi_Creds[i].wifi_pw) - 1);
+
+      // Don't permit NULL SSID and password len < MIN_AP_PASSWORD_SIZE (8)
+      if ( (String(WM_config.WiFi_Creds[i].wifi_ssid) != "") && (strlen(WM_config.WiFi_Creds[i].wifi_pw) >= MIN_AP_PASSWORD_SIZE) )
+      {
+        LOGERROR3(F("* Add SSID = "), WM_config.WiFi_Creds[i].wifi_ssid, F(", PW = "), WM_config.WiFi_Creds[i].wifi_pw );
+        wifiMulti.addAP(WM_config.WiFi_Creds[i].wifi_ssid, WM_config.WiFi_Creds[i].wifi_pw);
+      }
+    }
+    saveConfigData();
+    initialConfig = true;
+  }
+
+  digitalWrite(PIN_LED, LED_OFF); // Turn led off as we are not in configuration mode.
+  startedAt = millis();
+
+  if (!initialConfig)
+  {
+    // Load stored data, the addAP ready for MultiWiFi reconnection
+    loadConfigData();
+    for (uint8_t i = 0; i < NUM_WIFI_CREDENTIALS; i++)
+    {
+      // Don't permit NULL SSID and password len < MIN_AP_PASSWORD_SIZE (8)
+      if ( (String(WM_config.WiFi_Creds[i].wifi_ssid) != "") && (strlen(WM_config.WiFi_Creds[i].wifi_pw) >= MIN_AP_PASSWORD_SIZE) )
+      {
+        LOGERROR3(F("* Add SSID = "), WM_config.WiFi_Creds[i].wifi_ssid, F(", PW = "), WM_config.WiFi_Creds[i].wifi_pw );
+        wifiMulti.addAP(WM_config.WiFi_Creds[i].wifi_ssid, WM_config.WiFi_Creds[i].wifi_pw);
+      }
+    }
+
+    if ( WiFi.status() != WL_CONNECTED )
+    {
+      Serial.println("ConnectMultiWiFi in setup");
+      connectMultiWiFi();
+    }
+  }
+
+  Serial.print("After waiting ");
+  Serial.print((float) (millis() - startedAt) / 1000L);
+  Serial.print(" secs more in setup(), connection result is ");
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.print("connected. Local IP: ");
+    Serial.println(WiFi.localIP());
+    setup_wifi();
+  }
+  else
+    Serial.println(ESP_wifiManager.getStatus(WiFi.status()));
+ server.on("/", HTTP_GET, [](){
     handleFileRead("/");
-    //handleRoot();
-  });
-
-//Handle when user requests a file that does not exist
+ });
+  //Handle when user requests a file that does not exist
   server.onNotFound([](){
     if(!handleFileRead(server.uri()))
   server.send(404, "text/plain", "FileNotFound");
@@ -474,59 +813,28 @@ void setup() {
   server.begin();
   Serial.println("HTTP server started");
 
-  // start webSocket server
+  // start webSocket serv 
   webSocket.begin();
   Serial.println("Websocket server started");
   webSocket.onEvent(webSocketEvent);
 
-//+++++++ MDNS will not work when WiFi is in AP mode but I am leave this code in place incase this changes++++++
-//if (!MDNS.begin("esp8266")) {
-//    Serial.println("Error setting up MDNS responder!");
-//    while(1) { 
-//      delay(1000);
-//    }0;9
-//  }
-//  Serial.println("mDNS responder started");
-
-  // Add service to MDNS
-  //  MDNS.addService("http", "tcp", 80);
-  //  MDNS.addService("ws", "tcp", 81);
-
 }
 
+//setup is complete, loop indefinitely to check for inputs and signals from websocket clients and check for reset to enable portal
 void loop() {
-
-  /*StaticJsonDocument<200> doc;
-  
-  doc["sensor"] = "gps";
-  doc["time"] = 1351824120;
-  
-  JsonArray data = doc.createNestedArray("data");
-
-  data.add(48.756080);  // 6 is the number of decimals to print
-  data.add(2.302038);   // if not specified, 2 digits are printed
-  String databuf;
-  serializeJson(doc, databuf);
-  //serializeJsonPretty(doc, Serial);
-  
-  webSocket.sendTXT(0, databuf);
-
-  delay(10);*/
-
   webSocket.loop();
   server.handleClient();
-  if ((timer_state == true) && (timer_started == false)) startTimer();
-  if ((timer_state == false) && (timer_started == true)) stopTimer();
-
-   StaticJsonDocument<200> clock_time;
+  
+  StaticJsonDocument<200> clock_time;
   clock_time["message_type"] = "clock_update";
-  clock_time["value"] = Clock_seconds;
+  clock_seconds++;
+  clock_time["value"] = clock_seconds;  //Hard coded to get programs intergrated
   JsonObject time_data = clock_time.createNestedObject();
-  
-  
   String databuf;
   serializeJson(clock_time, databuf);
- 
- 
-  //webSocket.sendTXT(0, databuf);
+  webSocket.sendTXT(0, databuf);
+
+  check_status();
+
+  delay(1000);  //Slow things down while getting integratiom work done
 }

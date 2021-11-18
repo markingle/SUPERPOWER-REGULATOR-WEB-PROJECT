@@ -295,35 +295,50 @@
 
 <body>
 	
-	<div id="centerapp" ><b>SeaArk LiveWell Timer</b>
-	<!--<div class="container" style="float:left; width:50%; height:100%;">
-	<div id="g1" class="gauge" style="width:100px; height:80px"></div>-->
-	<!--<button id="I" class="button" type="button">TIMER ON/OFF</button>-->
-	<br>
-	<center>
-	<!--<label class="switch">
-		  <input type="checkbox" style="-webkit-appearance; width:60%; height:150%;" name="onoff_switch" id="onoff_switch_id" value="checked" onclick="sendSwitchState()">
-		  <span class="slider"></span>
-	</label>-->
-	<div class="onoffswitch">
-    <input type="checkbox" name="onoffswitch" class="onoffswitch-checkbox" id="onoff_switch_id" onclick="sendSwitchState()">
-    <label class="onoffswitch-label" for="onoff_switch_id">
-        <span class="onoffswitch-inner"></span>
-        <span class="onoffswitch-switch"></span>
-    </label>
-	</div>
-	</center>
-	<br><br>
-	<button id="M" class="button" type="button">Future Use</button>
-	<button id="L" class="button" type="button">Future Use</button>
-	<!--<button id="R" class="button" type="button">Future Use</button>
-	<button id="T" class="button" type="button">Future Use</button>-->
-	<!--</div> -->
-	<!-- <div style="float:right; width:50%; height:300px;"> 
-	<canvas id="field" width="400" height="400">
-    </canvas>-->
+	<div id="centerapp" ><b>GPIO 05</b>
+		<br>
+			<center>
+			
+			<div class="onoffswitch">
+			<input type="checkbox" name="onoffswitch_1" class="onoffswitch-checkbox" id="onoff_switch_id_1" onclick="sendSwitchState()">
+			<label class="onoffswitch-label" for="onoff_switch_id_1">
+				<span class="onoffswitch-inner"></span>
+				<span class="onoffswitch-switch"></span>
+			</label>
+			</div>
+			</center>
+		<br><br>
+
+	<div id="centerapp" ><b>GPIO 06</b>
+		<br>
+			<center>
+			
+			<div class="onoffswitch">
+			<input type="checkbox" name="onoffswitch_2" class="onoffswitch-checkbox" id="onoff_switch_id_2" onclick="sendSwitchState()">
+			<label class="onoffswitch-label" for="onoff_switch_id_2">
+				<span class="onoffswitch-inner"></span>
+				<span class="onoffswitch-switch"></span>
+			</label>
+			</div>
+			</center>
+		<br><br>
+
+	<div id="centerapp" ><b>GPIO 07</b>
+		<br>
+			<center>
+			
+			<div class="onoffswitch">
+			<input type="checkbox" name="onoffswitch_3" class="onoffswitch-checkbox" id="onoff_switch_id_3" onclick="sendSwitchState()">
+			<label class="onoffswitch-label" for="onoff_switch_id_3">
+				<span class="onoffswitch-inner"></span>
+				<span class="onoffswitch-switch"></span>
+			</label>
+			</div>
+			</center>
+		<br><br>
+	
     <div style="background: #999;">
-    <h2>Set the On Time and Off Time for the live well:</h2>
+    <h2>Set the On Time and Off time:</h2>
 	<label for="on_time">Timer Controls (Minutes)</label>
 	<p>
 	<h2> On Time <input type="range" orient="horizontal" style="-webkit-appearance; -webkit-slider-thumb; width:60%; height:150%;" name="on_time" id="ontime_id" value="0" min="0" max="10" oninput="document.getElementById('parM').innerText = parseInt(this.value);parM=parseInt(this.value)" onchange="sendTime()">
@@ -341,9 +356,10 @@
   	<input type="text" name="countdown" id="countdown_id" value="0">
 	</div>
 	
-	
+	<!-- These are the js libraries for oing some fancy graphics on a web page......cool stuff!  -->
 	<!--<script src="raphael-2.1.4.min.js"></script>-->
-    <script src="justgage.js"></script>
+     <!--<script src="justgage.js"></script>-->
+
 	<script type="text/javascript">
 	
 	var g1;
